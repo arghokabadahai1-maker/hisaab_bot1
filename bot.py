@@ -274,7 +274,8 @@ def start_web():
     uvicorn.run(web,host="0.0.0.0",port=int(os.getenv("PORT","10000")))
 
 async def main():
-    application=Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+    application=Application.builder().token(BOT_TOKEN).build()
+
     application.add_handler(CommandHandler("start",start))
     application.add_handler(CommandHandler("add",add_cmd))
     application.add_handler(CommandHandler("list",list_cmd))
@@ -284,7 +285,33 @@ async def main():
     application.add_handler(CommandHandler("help",help_cmd))
     application.add_handler(CallbackQueryHandler(callbacks))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,text_router))
-    await application.run_polling(close_loop=False)
+
+    # run_polling() is synchronous in python-telegram-bot; do not await it.
+    # Start and stop the async application lifecycle explicitly instead.
+    await application.initialize()
+    await post_init(application)
+
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    import signal
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, stop_event.set)
+        except (NotImplementedError, RuntimeError):
+            pass
+
+    try:
+        await application.updater.start_polling()
+        await application.start()
+        logging.info("Telegram bot polling started successfully.")
+        await stop_event.wait()
+    finally:
+        if application.updater and application.updater.running:
+            await application.updater.stop()
+        if application.running:
+            await application.stop()
+        await application.shutdown()
 
 if __name__=="__main__":
     Thread(target=start_web,daemon=True).start()
